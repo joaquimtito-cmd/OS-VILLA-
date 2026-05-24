@@ -209,7 +209,7 @@ pre { font-family: 'Courier New', monospace; font-size: 12px; background: #f5f5f
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 <!-- TELA DE LOGIN -->
@@ -477,43 +477,24 @@ async function fazerLogin() {
   const erro  = document.getElementById('login-erro');
   erro.textContent = 'Aguarde...';
   if (!email || !senha) { erro.textContent = 'Preencha e-mail e senha.'; return; }
+  if (!window.supabaseClient) { erro.textContent = 'Erro: sistema não inicializado. Recarregue a página.'; return; }
   try {
-    // Login direto via fetch (mais confiável no Safari)
-    const resp = await fetch(SUPA_URL + '/auth/v1/token?grant_type=password', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPA_KEY,
-        'Authorization': 'Bearer ' + SUPA_KEY
-      },
-      body: JSON.stringify({ email, password: senha })
-    });
-    const data = await resp.json();
-    if (data.error || !data.access_token) {
-      erro.textContent = 'E-mail ou senha incorretos.';
-      return;
-    }
-    // Salvar sessão manualmente
-    localStorage.setItem('sb-session', JSON.stringify(data));
-    // Iniciar sessão com dados do usuário
+    const { data, error } = await window.supabaseClient.auth.signInWithPassword({ email, password: senha });
+    if (error) { erro.textContent = 'Erro: ' + error.message; console.error(error); return; }
+    if (!data?.user) { erro.textContent = 'Usuário não encontrado.'; return; }
     await iniciarSessao(data.user);
   } catch(e) {
-    erro.textContent = 'Erro de conexão: ' + e.message;
-    console.error('Exception:', e);
+    erro.textContent = 'Erro: ' + e.message;
+    console.error(e);
   }
 }
 
 async function iniciarSessao(user) {
   usuarioAtual = user;
-  // Buscar perfil via fetch
+  // Buscar perfil
   try {
-    const saved = localStorage.getItem('sb-session');
-    const token = saved ? JSON.parse(saved).access_token : SUPA_KEY;
-    const resp = await fetch(SUPA_URL + '/rest/v1/perfis?id=eq.' + user.id + '&limit=1', {
-      headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + token }
-    });
-    const perfis = await resp.json();
-    perfilAtual = Array.isArray(perfis) ? perfis[0] : null;
+    const { data: perfis } = await window.supabaseClient.from('perfis').select('*').eq('id', user.id).single();
+    perfilAtual = perfis;
   } catch(e) { perfilAtual = null; }
   // Mostrar nome no header
   const nomeEl = document.getElementById('usuario-nome');
@@ -543,7 +524,7 @@ function aplicarPermissoes() {
 }
 
 async function fazerLogout() {
-  localStorage.removeItem('sb-session');
+  if (window.supabaseClient) await window.supabaseClient.auth.signOut();
   usuarioAtual = null; perfilAtual = null; ordens = [];
   document.getElementById('tela-app').style.display = 'none';
   document.getElementById('tela-login').style.display = 'flex';
@@ -562,48 +543,26 @@ window.addEventListener('load', async () => {
 // ── Carregar e salvar OS no Supabase ──
 async function carregarOrdens() {
   try {
-    const saved = localStorage.getItem('sb-session');
-    const token = saved ? JSON.parse(saved).access_token : SUPA_KEY;
-    const resp = await fetch(SUPA_URL + '/rest/v1/ordens_servico?select=*&order=criado_em.desc', {
-      headers: {
-        'apikey': SUPA_KEY,
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      }
-    });
-    const data = await resp.json();
-    if (!Array.isArray(data)) { console.error('Erro ao carregar OS:', data); return; }
-    ordens = data.map(row => ({ ...row.dados, _supa_id: row.id }));
+    const { data, error } = await window.supabaseClient.from('ordens_servico').select('*').order('criado_em', { ascending: false });
+    if (error) { console.error('Erro ao carregar OS:', error); return; }
+    ordens = (data || []).map(row => ({ ...row.dados, _supa_id: row.id }));
     renderLista();
   } catch(e) { console.error('Erro ao carregar OS:', e); }
 }
 
 async function salvarOSSupabase(os) {
   try {
-    const saved = localStorage.getItem('sb-session');
-    const token = saved ? JSON.parse(saved).access_token : SUPA_KEY;
-    const resp = await fetch(SUPA_URL + '/rest/v1/ordens_servico', {
-      method: 'POST',
-      headers: {
-        'apikey': SUPA_KEY,
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates'
-      },
-      body: JSON.stringify({ id: os.id, dados: os, criado_por: usuarioAtual?.id, atualizado_em: new Date().toISOString() })
+    const { error } = await window.supabaseClient.from('ordens_servico').upsert({
+      id: os.id, dados: os, criado_por: usuarioAtual?.id, atualizado_em: new Date().toISOString()
     });
-    if (!resp.ok) { const err = await resp.json(); console.error('Erro ao salvar OS:', err); }
+    if (error) console.error('Erro ao salvar OS:', error);
   } catch(e) { console.error('Erro ao salvar OS:', e); }
 }
 
 async function excluirOSSupabase(id) {
   try {
-    const saved = localStorage.getItem('sb-session');
-    const token = saved ? JSON.parse(saved).access_token : SUPA_KEY;
-    await fetch(SUPA_URL + '/rest/v1/ordens_servico?id=eq.' + id, {
-      method: 'DELETE',
-      headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + token }
-    });
+    const { error } = await window.supabaseClient.from('ordens_servico').delete().eq('id', id);
+    if (error) console.error('Erro ao excluir OS:', error);
   } catch(e) { console.error('Erro ao excluir OS:', e); }
 }
 
